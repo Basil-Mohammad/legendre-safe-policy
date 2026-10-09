@@ -4,5 +4,6 @@ __pycache__/
 *.egg-info/
 .venv/
 *.pt
-# experiment outputs are generated locally by scripts/run_all_pilot.sh
+# experiment outputs are generated locally by the run scripts
 results/
+results_v2/

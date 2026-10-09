@@ -23,7 +23,12 @@ def main():
     ap.add_argument("--tag", default=None)
     a = ap.parse_args()
     tag = a.tag or (f"{a.method}_mu{a.mu}_s{a.seed}" if a.method == "legendre" else f"{a.method}_s{a.seed}")
+    if a.method == "penalty" and a.tag is None:
+        tag = f"penalty_l{a.penalty}_s{a.seed}"
     os.makedirs(a.out, exist_ok=True)
+    if os.path.exists(os.path.join(a.out, tag + ".json")):
+        print(f"[{tag}] exists, skipping", flush=True)
+        return
     t0 = time.time()
     agent, curve = train(a.method, a.seed, steps=a.steps, mu=a.mu, penalty=a.penalty)
     final = {}
@@ -32,7 +37,7 @@ def main():
         r = final[name]
         print(f"[{tag}] cond {name}: succ={r['success']:.3f} coll={r['collision_rate']:.3f} "
               f"ttg={r['time_to_goal']:.1f} rankdef={r['jacobian']['frac_rank_deficient']:.3f}", flush=True)
-    json.dump(dict(method=a.method, seed=a.seed, mu=a.mu, steps=a.steps, curve=curve, final=final,
+    json.dump(dict(method=a.method, seed=a.seed, mu=a.mu, penalty=a.penalty, steps=a.steps, curve=curve, final=final,
                    wall_s=time.time() - t0), open(os.path.join(a.out, tag + ".json"), "w"), indent=1)
 
 

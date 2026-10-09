@@ -108,3 +108,24 @@ def test_end_to_end_no_collisions_all_safe_layers():
                 assert not info["collided"].any(), (cond, layer, step)
                 worst = min(worst, float(np.min(np.where(np.isfinite(env.clearance()), env.clearance(), 9))))
             assert worst > -1e-6
+
+
+def test_margin_controls_are_inside_safe_polytope_and_safe():
+    """Shrunken-polytope controls (kappa<1) keep u=0 interior and never collide."""
+    from lsp.agent import Agent
+    t = lambda x: torch.as_tensor(x)
+    rng = np.random.default_rng(1)
+    for name in ("sp_m09", "sp_m07", "gauge_m09"):
+        ag = Agent(name, CONDITIONS["A"], seed=0)
+        assert ag.kappa < 1.0 and ag.base in ("sp", "gauge")
+        for cond in "ABC":
+            env = NavEnv(64, CONDITIONS[cond], seed=21)
+            for _ in range(100):
+                a = t(rng.uniform(-1, 1, (64, 2)))
+                cons = {k: t(v) for k, v in env.cons().items()}
+                u = ag.layer(a, t(env.pos), cons)
+                A, b, m = build_polytope(t(env.pos), cons["centers"], cons["radii"], cons["omask"],
+                                         cons["gamma"], env.cfg.dt, env.cfg.umax)
+                assert ((A * u.unsqueeze(1)).sum(-1) <= ag.kappa * b + 1e-8)[m].all()
+                _, _, _, _, info = env.step(u.numpy())
+                assert not info["collided"].any(), (name, cond)

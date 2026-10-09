@@ -14,7 +14,8 @@ from .layers import build_polytope, gauge_map, legendre_map, project_polytope_2d
 torch.set_default_dtype(torch.float64)
 torch.set_num_threads(1)
 
-METHODS = ("penalty", "se", "sp", "gauge", "legendre")
+METHODS = ("penalty", "se", "sp", "gauge", "legendre", "sp_m09", "sp_m07", "gauge_m09")
+KAPPA = {"m09": 0.9, "m07": 0.7}  # margin controls: polytope shrunk to {A u <= kappa b}
 
 
 def mlp(i, o, h=128):
@@ -77,6 +78,8 @@ class Agent:
                  noise=0.2, tnoise=0.2, tclip=0.5, delay=2, seed=0):
         assert method in METHODS
         self.method, self.cfg, self.mu = method, cfg, mu
+        self.base = method.split("_m")[0]
+        self.kappa = KAPPA[method.split("_")[-1]] if "_m" in method else 1.0
         self.lr, self.tau, self.disc = lr, tau, disc
         self.noise, self.tnoise, self.tclip, self.delay = noise, tnoise, tclip, delay
         torch.manual_seed(seed)
@@ -87,31 +90,34 @@ class Agent:
         self.upd = 0
 
     def poly(self, pos, cons):
-        return build_polytope(pos, cons["centers"], cons["radii"], cons["omask"], cons["gamma"],
-                              self.cfg.dt, self.cfg.umax)
+        A, b, m = build_polytope(pos, cons["centers"], cons["radii"], cons["omask"], cons["gamma"],
+                                 self.cfg.dt, self.cfg.umax)
+        if self.kappa < 1.0:
+            b = b * self.kappa  # b > 0, so u = 0 stays strictly interior
+        return A, b, m
 
     def layer(self, a, pos, cons):
         """Differentiable map a in [-1,1]^2 -> executed (or nominal for penalty/se) action u."""
         um = self.cfg.umax
-        if self.method in ("penalty", "se"):
+        if self.base in ("penalty", "se"):
             return um * a
         A, b, m = self.poly(pos, cons)
-        if self.method == "sp":
+        if self.base == "sp":
             return project_polytope_2d(um * a, A, b, m)
-        if self.method == "gauge":
+        if self.base == "gauge":
             return gauge_map(a, A, b, m)
         return legendre_map(a, A, b, m, self.mu)
 
     def env_filter(self, u_nom, pos, cons):
         """Safeguard applied by the ENVIRONMENT (method 'se' only)."""
-        if self.method != "se":
+        if self.base != "se":
             return u_nom
         A, b, m = self.poly(pos, cons)
         return project_polytope_2d(u_nom, A, b, m)
 
     def stored(self, a, u_exec):
         """What the replay buffer stores as the action seen by the critic (normalised)."""
-        if self.method in ("penalty", "se"):
+        if self.base in ("penalty", "se"):
             return a
         return u_exec / self.cfg.umax
 
@@ -127,9 +133,9 @@ class Agent:
                 a = (a + self.noise * to_t(rng.standard_normal(a.shape))).clamp(-1, 1)
         u_layer = self.layer(a, p, c)
         u_exec = self.env_filter(u_layer, p, c)
-        if self.method in ("gauge", "legendre"):
+        if self.base in ("gauge", "legendre"):
             u_nom = torch.full_like(u_exec, float("nan"))  # no nominal action defined
-        elif self.method == "sp":
+        elif self.base == "sp":
             u_nom = self.cfg.umax * a
         else:
             u_nom = u_layer
@@ -204,7 +210,7 @@ def evaluate(agent: Agent, cfg: EnvCfg, n_episodes=500, seed=12345, jac_samples=
         collisions_per_ep=float(ncoll.mean()),
         time_to_goal=float(np.nanmean(t_goal)) if reached.any() else float("nan"),
         task_return=float(ret.mean()),
-        intervention=float((interv / np.maximum(steps, 1)).mean()) if agent.method in ("penalty", "se", "sp") else float("nan"),
+        intervention=float((interv / np.maximum(steps, 1)).mean()) if agent.base in ("penalty", "se", "sp") else float("nan"),
         deadlock_rate=float((~reached & ~collided).mean()),
     )
     if jac_samples:
@@ -258,7 +264,7 @@ def train(method, seed, steps=100_000, n_envs=16, utd=0.25, batch=256, warmup=50
     env = NavEnv(n_envs, cfg, seed=seed)
     ag = Agent(method, cfg, mu=mu, seed=seed)
     buf = Replay(steps)
-    pen = penalty if method == "penalty" else 0.0
+    pen = penalty if method == "penalty" else 0.0  # penalty only for the unfiltered baseline
     curve, t0, total, upd_budget = [], time.time(), 0, 0.0
     ep_coll = 0.0
     while total < steps:
