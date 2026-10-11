@@ -52,14 +52,14 @@ def build_polytope(pos, centers, radii, omask, gamma, dt, umax, gamma_wall=0.5, 
     return A, b, mask
 
 
-def _newton_solve(nu, A, b, mask, mu, iters=60, tol=1e-9):
+def _newton_solve(nu, A, b, mask, mu, iters=60, tol=1e-9, u0=None):
     """Damped Newton on f(u) = -sum log s_i - (nu/mu).u, s_i = b_i - a_i.u  (self-concordant).
 
     Step size t = 1/(1+lambda) keeps iterates strictly feasible for ANY start in the interior.
     u = 0 is strictly interior by construction of the polytope (b > 0).
     """
     z = nu / mu
-    u = torch.zeros_like(nu)
+    u = torch.zeros_like(nu) if u0 is None else u0.clone()
     maskf = mask.to(nu.dtype)
     for it in range(iters):
         s = b - (A * u.unsqueeze(1)).sum(-1)
@@ -85,24 +85,30 @@ def legendre_hessian(u, A, b, mask):
 
 class _LegendreFn(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, nu, A, b, mask, mu):
+    def forward(ctx, nu, A, b, mask, mu, u0=None, straight_through=False):
         with torch.no_grad():
-            u = _newton_solve(nu, A, b, mask, mu)
+            u = _newton_solve(nu, A, b, mask, mu, u0=u0)
             H = legendre_hessian(u, A, b, mask)
         ctx.save_for_backward(H)
         ctx.mu = mu
+        ctx.st = straight_through
         return u
 
     @staticmethod
     def backward(ctx, grad_u):
         (H,) = ctx.saved_tensors
+        if ctx.st:  # straight-through ablation: d u / d nu replaced by the identity
+            return grad_u, None, None, None, None, None, None
         g = torch.linalg.solve(H, grad_u.unsqueeze(-1)).squeeze(-1) / ctx.mu
-        return g, None, None, None, None
+        return g, None, None, None, None, None, None
 
 
-def legendre_map(nu, A, b, mask, mu):
-    """Differentiable, strictly-interior action  u*(nu)  (see module docstring)."""
-    return _LegendreFn.apply(nu, A, b, mask, mu)
+def legendre_map(nu, A, b, mask, mu, u0=None, straight_through=False):
+    """Differentiable, strictly-interior action  u*(nu)  (see module docstring).
+
+    u0: strictly interior starting point (default 0, valid when b > 0 as in the single integrator).
+    """
+    return _LegendreFn.apply(nu, A, b, mask, mu, u0, straight_through)
 
 
 def legendre_jacobian(u, A, b, mask, mu):

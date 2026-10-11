@@ -22,6 +22,4 @@ pip install -r requirements.txt
 pytest -q
 bash scripts/run_all_pilot.sh
 python scripts/aggregate.py results
-bash scripts/run_study2.sh           # confirmatory study (seeds 3-5), ~1 h on 2 cores
-python scripts/aggregate_v2.py results_v2
 ```

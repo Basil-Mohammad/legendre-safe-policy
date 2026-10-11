@@ -4,6 +4,6 @@ __pycache__/
 *.egg-info/
 .venv/
 *.pt
-# experiment outputs are generated locally by the run scripts
-results/
-results_v2/
+results*/
+docs/
+tools/
