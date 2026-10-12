@@ -91,3 +91,19 @@ def test_all_safe_methods_zero_collisions_under_adversarial_actions():
                 ncoll += int(info["collided"].sum())
                 nfb += int(fb.sum())
             assert ncoll == 0, (cond, method, ncoll, nfb)
+
+
+def test_output_scale_is_equivalent_to_scaling_nu():
+    """Study 4 knob: safe_action(.., scale=s)(nu) == safe_action(.., scale=1)(s*nu) for sp and gauge."""
+    import torch
+    from lsp.di_agent import safe_action
+    from lsp.di_env import DI_CONDITIONS, DIEnv
+    t = lambda x: torch.as_tensor(x)
+    env = DIEnv(32, DI_CONDITIONS["A"], seed=3)
+    cons = {k: t(v) for k, v in env.cons().items()}
+    p, v = t(env.pos), t(env.vel)
+    nu = torch.empty(32, 2).uniform_(-1, 1).double()
+    for m in ("sp", "gauge"):
+        a1, _ = safe_action(m, nu, p, v, cons, scale=2.5)
+        a2, _ = safe_action(m, 2.5 * nu, p, v, cons, scale=1.0)
+        assert torch.allclose(a1, a2)

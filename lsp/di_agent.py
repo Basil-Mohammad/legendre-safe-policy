@@ -83,7 +83,7 @@ def polytope_and_interior(p, v, cons):
     return A, b, m, cen, has, strict
 
 
-def safe_action(method, nu, p, v, cons, mu=0.05):
+def safe_action(method, nu, p, v, cons, mu=0.05, scale=1.0):
     """Executed acceleration for the safe methods.  Returns (a_exec, fallback_mask).
     Differentiable w.r.t. nu except on fallback samples (constant brake)."""
     base, kappa, st = parse(method)
@@ -100,9 +100,9 @@ def safe_action(method, nu, p, v, cons, mu=0.05):
         au0 = torch.einsum("bri,bi->br", A, u0)
         b = torch.where(m, (1 - kappa) * au0 + kappa * b, b)
     if base == "sp":
-        u = project_polytope_2d(AMAX * nu, A, b, m)
+        u = project_polytope_2d(AMAX * scale * nu, A, b, m)
     elif base == "gauge":
-        u = gauge_about(nu, A, b, m, u0)
+        u = gauge_about(scale * nu, A, b, m, u0)
     elif base == "legendre":
         u = legendre_map(nu, A, b, m, mu, u0, st)
     else:
@@ -111,7 +111,7 @@ def safe_action(method, nu, p, v, cons, mu=0.05):
 
 
 @torch.no_grad()
-def env_filter_projection(a_nom, p, v, cons):
+def env_filter_projection(a_nom, p, v, cons):  # a_nom already includes the output scale
     """Method 'se': the environment projects the nominal action onto the safe polytope."""
     A, b, m, cen, has, strict = polytope_and_interior(p, v, cons)
     B, R, _ = A.shape
@@ -177,9 +177,10 @@ class DIReplay:
 
 class DIAgent:
     def __init__(self, method, mu=0.05, lr=3e-4, tau=0.005, disc=0.99, noise=0.2, tnoise=0.2,
-                 tclip=0.5, delay=2, seed=0):
+                 tclip=0.5, delay=2, seed=0, scale=1.0):
         assert method in METHODS3, method
-        self.method, self.mu = method, mu
+        self.method, self.mu, self.scale = method, mu, scale
+        assert scale == 1.0 or parse(method)[0] != "legendre", "scale is a baseline knob; Legendre uses mu"
         self.base, self.kappa, self.st = parse(method)
         self.tau, self.disc, self.noise, self.tnoise, self.tclip, self.delay = tau, disc, noise, tnoise, tclip, delay
         torch.manual_seed(seed)
@@ -193,7 +194,7 @@ class DIAgent:
         """Differentiable action as seen by the critic (normalised by AMAX); also the fallback mask."""
         if self.base in ("penalty", "se"):
             return nu, torch.zeros(len(nu), dtype=torch.bool)
-        a, fb = safe_action(self.method, nu, p, v, cons, self.mu)
+        a, fb = safe_action(self.method, nu, p, v, cons, self.mu, self.scale)
         return a / AMAX, fb
 
     @torch.no_grad()
@@ -209,11 +210,11 @@ class DIAgent:
         if self.base == "penalty":
             a_exec, fb, a_nom = AMAX * nu, torch.zeros(len(nu), dtype=torch.bool), AMAX * nu
         elif self.base == "se":
-            a_nom = AMAX * nu
+            a_nom = AMAX * self.scale * nu
             a_exec, fb = env_filter_projection(a_nom, p, v, c)
         else:
-            a_exec, fb = safe_action(self.method, nu, p, v, c, self.mu)
-            a_nom = AMAX * nu if self.base == "sp" else torch.full_like(a_exec, float("nan"))
+            a_exec, fb = safe_action(self.method, nu, p, v, c, self.mu, self.scale)
+            a_nom = AMAX * self.scale * nu if self.base == "sp" else torch.full_like(a_exec, float("nan"))
         stored = nu if self.base in ("penalty", "se") else a_exec / AMAX
         return dict(nu=nu.numpy(), a_exec=a_exec.numpy(), a_nom=a_nom.numpy(), stored=stored.numpy(),
                     fallback=fb.numpy())
@@ -321,11 +322,11 @@ def evaluate(agent, cfg, n_episodes=500, seed=12345, jac_samples=0):
 
 
 def train(method, seed, steps=100_000, n_envs=16, utd=0.25, batch=256, warmup=5000, mu=0.05,
-          penalty=2.0, eval_every=10_000, eval_eps=100, log=print):
+          penalty=2.0, scale=1.0, eval_every=10_000, eval_eps=100, log=print):
     rng = np.random.default_rng(seed)
     cfg = DI_CONDITIONS["A"]
     env = DIEnv(n_envs, cfg, seed=seed)
-    ag = DIAgent(method, mu=mu, seed=seed)
+    ag = DIAgent(method, mu=mu, seed=seed, scale=scale)
     buf = DIReplay(steps)
     pen = penalty if method == "penalty" else 0.0
     curve, t0, total, upd_budget = [], time.time(), 0, 0.0
