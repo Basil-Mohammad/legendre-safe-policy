@@ -129,3 +129,17 @@ def test_margin_controls_are_inside_safe_polytope_and_safe():
                 assert ((A * u.unsqueeze(1)).sum(-1) <= ag.kappa * b + 1e-8)[m].all()
                 _, _, _, _, info = env.step(u.numpy())
                 assert not info["collided"].any(), (name, cond)
+
+
+def test_single_integrator_output_scale_equivalence():
+    """Study 5 knob: Agent(scale=s).layer(a) == Agent(scale=1).layer(s*a) for se/sp/gauge."""
+    from lsp.agent import Agent
+    t = lambda x: torch.as_tensor(x)
+    env = NavEnv(32, CONDITIONS["A"], seed=7)
+    cons = {k: t(v) for k, v in env.cons().items()}
+    pos = t(env.pos)
+    a = torch.empty(32, 2).uniform_(-1, 1)
+    for m in ("se", "sp", "gauge"):
+        u1 = Agent(m, CONDITIONS["A"], seed=0, scale=2.0).layer(a, pos, cons)
+        u2 = Agent(m, CONDITIONS["A"], seed=0, scale=1.0).layer(2.0 * a, pos, cons)
+        assert torch.allclose(u1, u2)

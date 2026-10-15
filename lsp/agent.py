@@ -75,9 +75,10 @@ class Replay:
 
 class Agent:
     def __init__(self, method, cfg: EnvCfg, mu=0.05, lr=3e-4, tau=0.005, disc=0.99,
-                 noise=0.2, tnoise=0.2, tclip=0.5, delay=2, seed=0):
+                 noise=0.2, tnoise=0.2, tclip=0.5, delay=2, seed=0, scale=1.0):
         assert method in METHODS
-        self.method, self.cfg, self.mu = method, cfg, mu
+        self.method, self.cfg, self.mu, self.scale = method, cfg, mu, scale
+        assert scale == 1.0 or method.split("_m")[0] in ("se", "sp", "gauge"), "scale is a baseline knob"
         self.base = method.split("_m")[0]
         self.kappa = KAPPA[method.split("_")[-1]] if "_m" in method else 1.0
         self.lr, self.tau, self.disc = lr, tau, disc
@@ -99,13 +100,15 @@ class Agent:
     def layer(self, a, pos, cons):
         """Differentiable map a in [-1,1]^2 -> executed (or nominal for penalty/se) action u."""
         um = self.cfg.umax
-        if self.base in ("penalty", "se"):
+        if self.base == "penalty":
             return um * a
+        if self.base == "se":
+            return um * self.scale * a
         A, b, m = self.poly(pos, cons)
         if self.base == "sp":
-            return project_polytope_2d(um * a, A, b, m)
+            return project_polytope_2d(um * self.scale * a, A, b, m)
         if self.base == "gauge":
-            return gauge_map(a, A, b, m)
+            return gauge_map(self.scale * a, A, b, m)
         return legendre_map(a, A, b, m, self.mu)
 
     def env_filter(self, u_nom, pos, cons):
@@ -136,7 +139,7 @@ class Agent:
         if self.base in ("gauge", "legendre"):
             u_nom = torch.full_like(u_exec, float("nan"))  # no nominal action defined
         elif self.base == "sp":
-            u_nom = self.cfg.umax * a
+            u_nom = self.cfg.umax * self.scale * a
         else:
             u_nom = u_layer
         return dict(a=a.numpy(), u_exec=u_exec.numpy(), u_nom=u_nom.numpy(),
@@ -258,11 +261,11 @@ def jacobian_diagnostics(agent: Agent, visited, max_samples):
 
 
 def train(method, seed, steps=100_000, n_envs=16, utd=0.25, batch=256, warmup=5000, mu=0.05,
-          penalty=2.0, eval_every=10_000, eval_eps=100, log=print):
+          penalty=2.0, scale=1.0, eval_every=10_000, eval_eps=100, log=print):
     rng = np.random.default_rng(seed)
     cfg = CONDITIONS["A"]
     env = NavEnv(n_envs, cfg, seed=seed)
-    ag = Agent(method, cfg, mu=mu, seed=seed)
+    ag = Agent(method, cfg, mu=mu, seed=seed, scale=scale)
     buf = Replay(steps)
     pen = penalty if method == "penalty" else 0.0  # penalty only for the unfiltered baseline
     curve, t0, total, upd_budget = [], time.time(), 0, 0.0
